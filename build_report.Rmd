@@ -1,0 +1,145 @@
+---
+title: "Report"
+author: "Anh Nguyet Vu"
+date: "12/22/2021"
+output: 
+  html_document:
+    theme: lumen
+    css: custom.css
+params:
+  schema_csv: "https://raw.githubusercontent.com/nf-osi/nf-metadata-dictionary/main/NF.csv"
+  report_data: metadata_report.csv # compiled summary over all fileviews
+  update: FALSE # rerun aggregation of fileviews to update `report_data`
+  fileviews: fileviews # file containing fileview ids on separated lines
+  username: username # only req'd if update = TRUE; deprecated once nfportalutils uses authtoken by default
+  password: password
+  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(nfportalutils)
+library(data.table)
+library(reactable)
+library(htmltools)
+
+schema <- fread(params$schema_csv)
+
+# fun to check whether valid value by key and add column `valid` for result
+# first creates a lookup table from given schema table
+# .key and .value should be vectors to take advantage of data.table's lookup
+validMeta <- function(.key, .value, .schema = schema) {
+  lookup <- .schema[!duplicated(Attribute), .(key = Attribute, value = strsplit(`Valid Values`, split = ", ?"))]
+  lookup[, constrained := lengths(value) > 0]
+  lookup <- lookup[, .(value = unlist(value), valid = TRUE), by = .(key, constrained)] 
+  # keys with length-0 valid values have <NA> value
+  setkey(lookup, key, value)
+  
+  # valid indicates if key-value combination is valid, i.e. present in lookup
+  result <- lookup[.(.key, .value), .(key, value, valid)]
+  # note that key can be valid without key-value combo being valid
+  result[, validkey := .key %in% lookup$key]
+  # for valid = NA, truly NA for unconstrained free-text fields, otherwise not valid
+  result[is.na(valid), valid := fifelse(lookup$constrained[match(key, lookup$key)], FALSE, NA)]
+  
+  # comma-sep values will be labeled invalid and need additionally handling
+  result[valid == FALSE, valid := checkMultiValue(.value, .key, lookup)]
+  
+  return(result)
+}
+
+# Operates over a vector of values 
+checkMultiValue <- function(values, keys, lookup) {
+  multi <- grepl(",", values)
+  rechecked <- strsplit(values[multi], ", ?")
+  input <- data.table(key = rep(keys, lengths(rechecked)), value = unlist(rechecked), rechecked = values[multi])
+  
+  result <- lookup[.(keys, values), .(key, value, valid)]
+}
+
+```
+
+
+```{r compile, include=FALSE, eval=params$update}
+
+# Should only run if metadata_report.csv has not been compiled or update is forced
+
+library(reticulate)
+
+use_condaenv("r-reticulate", required = T) 
+# conda_install("r-reticulate", "synapseclient", pip = TRUE)
+# conda_install("r-reticulate", "pandas", pip = TRUE)
+nfportalutils::syn_login(params$username, params$password) 
+
+
+# Pull and aggregate individual fileviews --------------------------------------#
+# Given ids of relevant fileviews, pulls annotation data
+fv_refs <- readLines(params$fileviews)
+
+result <- list()
+for(i in fv_refs) {
+  result[[i]] <- try(table_query(i))
+}
+failed_pull <- sapply(result, class) == "try-error"
+if(any(failed_pull)) cat("Failed to pull:", fv_refs[which(failed_pull)])
+
+metadata <- result[!failed_pull]
+metadata <- lapply(metadata, as.data.table)
+metadata <- rbindlist(metadata, fill = T, idcol = TRUE)
+
+# Check valid and make main report data table ----------------------------------#
+# Prepare summary table containing:
+# `annotation_key`, `value`, `valid_key`, `valid_value`, `.id` (fileview id list column)
+for(col in names(metadata)) set(metadata, j = col, value = as.character(metadata[[col]]))
+metadata <- melt(metadata, id.vars = ".id", variable.name = "key", na.rm = TRUE)
+# Aside from <NA>, remove rows where value %in% c("", "nan", "NA", "NaN")
+metadata <- metadata[!value %in% c("", "nan", "NA", "NaN")]
+# Unique key, value by fileview
+metadata <- metadata[, .(.id = list(unique(.id))), by = .(key, value)]
+
+
+metadata <- metadata[, .(validMeta(key, value), .id)]
+
+# Save new report version
+# fwrite(metadata, "metadata_report.csv")
+
+```
+
+
+```{r render, echo=FALSE}
+
+# Make pretty HTML version of report
+
+# Read in report data
+metadata <- fread(params$report_data)
+
+# Render report, show only values up to 20 or fewer
+# metadata_display <- metadata[metadata[, .I[1:20], by=key]$V1] # if needed for larger tables
+metadata_display <- metadata[, head(.SD, 20), by = key]
+metadata_display[, .id := sapply(.id, toString)]
+reactable(
+  metadata_display,
+  groupBy = c("key"),
+  columns = list(
+    key = colDef(), # aggregate = "count"
+    value = colDef(cell = function(value, index) {
+      # div(class = "badge", value)
+      valid <- metadata_display[index, valid]
+      if(is.na(valid)) {
+        div(class = "badge neutral", value)
+      } else if(valid) {
+        div(class = "badge valid", value)
+      } else {
+        div(class = "badge warning", value)
+      }
+    }),
+    valid = colDef(show = FALSE),
+    validkey = colDef(show = FALSE)
+  ),
+  bordered = TRUE
+)
+
+
+```
+
