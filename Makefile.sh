@@ -1,13 +1,11 @@
 # Compile and render a report for metadata (annotations) across projects
-USERNAME = ${USERNAME} 
-PASSWORD = ${PASSWORD}
+AUTHTOKEN = ${SYNAPSE_AUTH_TOKEN}
 
-# Regenerate will calculate a new metadata summary before rendering
-updated_report:
-  Rscript -e "rmarkdown::render('build_report.Rmd',params=list(update = TRUE, username = ${USERNAME}, password = ${PASSWORD}))"
+# Recompile the data before rendering
+update_report:
+  Rscript -e "rmarkdown::render('build_report.Rmd', params=list(update = TRUE, authtoken = ${AUTHTOKEN}))"
 
-# Unlike regenerate, render will render report with whatever summary data is available;
-# used for testing format and style changes
+# Render report with saved data
 report: `
   Rscript -e "rmarkdown::render('build_report.Rmd')"
   
