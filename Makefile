@@ -2,7 +2,7 @@
 AUTHTOKEN = ${SYNAPSE_AUTH_TOKEN}
 
 # Recompile the data before rendering
-update_report:
+updated_report:
 	  Rscript -e "rmarkdown::render('build_report.Rmd', output_file='index.html',params=list(update = TRUE, authtoken = '${AUTHTOKEN}'))"
 
 # Render report with saved data
